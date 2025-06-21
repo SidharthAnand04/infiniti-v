@@ -3,15 +3,77 @@
 import os
 import itertools
 from typing import List, Dict
+import json
+import requests
+import openai
 
 # Placeholder environment variables for API keys
-GROQ_API_KEY = os.getenv('GROQ_API_KEY')
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-LETTA_API_KEY = os.getenv('LETTA_API_KEY')
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+LETTA_API_KEY = os.getenv("LETTA_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+openai.api_key = GROQ_API_KEY or OPENAI_API_KEY
+if GROQ_API_KEY:
+    openai.api_base = "https://api.groq.com/openai/v1"
+elif OPENAI_API_KEY:
+    openai.api_base = "https://api.openai.com/v1"
+
+
+def call_llm(messages: List[Dict], model: str = "gpt-3.5-turbo", max_tokens: int = 256) -> str:
+    """Query whichever LLM provider is configured."""
+
+    if GROQ_API_KEY or OPENAI_API_KEY:
+        response = openai.ChatCompletion.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message["content"].strip()
+
+    if ANTHROPIC_API_KEY:
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+        }
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": m["role"], "content": m["content"]} for m in messages
+            ],
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("content"):
+            return data["content"][0]["text"].strip()
+
+    raise RuntimeError("No LLM API key configured")
 
 
 def interpret_prompt(prompt: str) -> Dict:
     """Parse the user prompt to determine topic, setting and characters."""
+
+    if GROQ_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Extract scene metadata from the user prompt. "
+                    "Respond in JSON with keys: scene_topic, setting, "
+                    "scene_type, characters (list of {name, role, traits})."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            content = call_llm(messages)
+            data = json.loads(content)
+            return data
+        except Exception:
+            pass
 
     clean = prompt.strip()
     topic = clean
@@ -44,9 +106,22 @@ def interpret_prompt(prompt: str) -> Dict:
 
 
 def web_search(scene_topic: str, setting: str) -> Dict:
-    """Stub for a web search agent using Letta."""
+    """Search the web for background information."""
 
-    # Internet access is blocked so we return dummy references.
+    query = f"{scene_topic} {setting}".strip()
+    if LETTA_API_KEY:
+        url = "https://api.letta.ai/v1/search"
+        headers = {"Authorization": f"Bearer {LETTA_API_KEY}"}
+        try:
+            resp = requests.get(url, params={"q": query, "n": 3}, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            refs = [r.get("snippet", r.get("title", "")) for r in data.get("results", [])]
+            images = [i.get("url") for i in data.get("images", [])]
+            return {"references": refs, "images": images}
+        except Exception:
+            pass
+
     return {
         "references": [
             f"Facts about {scene_topic} gleaned from a web search.",
@@ -58,6 +133,22 @@ def web_search(scene_topic: str, setting: str) -> Dict:
 
 def plan_scene(metadata: Dict, references: Dict) -> Dict:
     """Create a lightweight scene plan based on metadata."""
+
+    if GROQ_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY:
+        prompt = (
+            "Using the following metadata and references, create a concise JSON\n"
+            "with keys: scene_title, background, flow (list), dialogue_turns,\n"
+            "camera_plan (list).\n"
+            f"Metadata: {json.dumps(metadata)}\n"
+            f"References: {json.dumps(references)}"
+        )
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = call_llm(messages)
+            data = json.loads(response)
+            return data
+        except Exception:
+            pass
 
     flow = ["intro", "concept", "reaction", "wrap"]
 
@@ -75,6 +166,23 @@ def plan_scene(metadata: Dict, references: Dict) -> Dict:
 
 def generate_dialogue(characters: List[Dict], turns: int, topic: str) -> List[Dict]:
     """Create simple dialogue lines cycling through characters."""
+
+    if GROQ_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY:
+        names = ", ".join(c["name"] for c in characters)
+        prompt = (
+            "Generate {turns} short dialogue lines about '{topic}'. "
+            "Cycle through the following characters: {names}. "
+            "Return JSON list with fields id, type='dialogue', character, text, duration.".format(
+                turns=turns, topic=topic, names=names
+            )
+        )
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            content = call_llm(messages, max_tokens=turns * 40)
+            data = json.loads(content)
+            return data
+        except Exception:
+            pass
 
     speakers = itertools.cycle(characters)
     lines: List[Dict] = []

@@ -2,6 +2,10 @@
 
 This project provides a small Flask backend for generating a JSON scene script from a one-sentence prompt. The current code simulates the ∞‑V multi-agent pipeline and can later be extended with real language models.
 
+The latest version can optionally call real language models and a search API.
+Set one of `GROQ_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` for LLM
+access. A `LETTA_API_KEY` enables web search support.
+
 ## Usage
 
 1. Install dependencies:
